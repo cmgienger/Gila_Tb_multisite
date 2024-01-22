@@ -1,0 +1,146 @@
+---
+title: "Gila Tb Multisite Comparison"
+author: "C.M. Gienger"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  #pdf_document: default
+  html_document: default
+subtitle: Bunch of Data
+---
+
+```{r setup}
+knitr::opts_chunk$set(
+	fig.height = 4,
+	fig.path = "Figs/",
+	fig.width = 6,
+	message = FALSE,
+	warning = FALSE,
+	dev = "png",
+	include = FALSE,
+	time_it = TRUE
+)
+ #sends figs in each chunk to folder after knitting
+
+library(tidyverse)
+library(lubridate) #work with date-time
+library(readxl) #for importing and combining xlsx files
+library(ggridges)
+
+#library(vroom) #fast import for big data sets
+#library(rio) #convert files from .xlsx to .csv
+#library(scales)
+```
+
+```{r load the saved workspace}
+load("Gila_Tb_multisite.RData")
+#saves from having to re-combine and load xlsx-csv files to dataframe
+```
+
+```{r load external scripts, eval=FALSE, code=xfun::read_utf8('scripts/time_it.R'), include=FALSE}
+#timer for each chunk
+```
+
+```{r one step combine and import xlsx files, message=FALSE, warning=FALSE, cache=TRUE}
+data <- dir("data",full.names = T) %>% 
+  map_df(read_xlsx) #uses a map function from purrr
+#pitches a lot of errors
+#but much less code, easier, and faster (~15 sec) than converting files to csv, combining, and deleting csvs.
+```
+Or try to newer dplyr multi-file import procedure:
+https://www.tidyverse.org/blog/2021/08/teach-tidyverse-2021/#reading-data-with-readr
+
+
+```{r clean up data after import, include=FALSE}
+data <- data %>% 
+  select(-Date, -Time) %>%
+  mutate(
+    ID = factor(ID), #make ID a factor
+    Population = factor(Population), #make population a factor
+    date=date(DateTime), #extract date from DateTime
+    month=month(DateTime), #extract month of year from DateTime
+    day=mday(DateTime), #extract day of month from DateTime
+    julian=yday(DateTime), #extract julian date (day of year)
+    hour=hour(DateTime), #extract hour of day
+    species = case_when(Population %in% c("MC", "OHB", "SC", "UT", "NV", "VF", "Tonto") ~ "sus", #sort pops by species
+                        Population %in% c("JA") ~ "hor",
+                        TRUE ~ "unk"))
+#str(data)
+#https://b-rodrigues.github.io/modern_R/descriptive-statistics-and-data-manipulation.html#if_else-case_when-and-recode
+#good example of many-category case_when()
+```
+
+```{r Tb_temporal_across_pops, fig.height=8, fig.width=7, message=FALSE, warning=FALSE, cache=TRUE}
+#make a chart showing the tracking duration for each individual
+
+ggplot(data, aes(DateTime, ID, color = Population)) +
+  geom_point (alpha=0.5, size=1.5) + #set symbol size proportional to # of overlapping obs (same day)
+  geom_line() +
+  labs(title = "Distribution of Heloderma Tb Data") +
+  scale_color_manual(labels = c("JA-Chamela", "AZ-McDowell", "NV-McCullough", "AZ-Owl Head", "AZ-Stone Canyon", "AZ-Tonto", "UT-Red Cliffs", "NV-Valley of Fire"), values = c("brown", "blue", "red", "green", "pink", "orange", "lightblue", "darkgreen")) +
+  scale_x_datetime(date_breaks = "2 year", date_labels = "%Y") +
+  theme(legend.position = "right") +
+  theme(legend.background = element_rect(size=0.5, linetype="solid", colour ="black"))
+
+#ggsave("Figs/Tb_across_pops.png")
+```
+
+```{r Tb_subset for OHB, message=FALSE, fig.height=6, fig.width=10, cache=TRUE}
+ggplot(data=subset(data, date >= "2005-01-01" & date <= "2008-01-01" & Population == "OHB" & Tb <39), aes(DateTime, ID)) + 
+  geom_line(color="black") +
+  geom_point(aes(color=Tb, size=Tb)) +
+  scale_color_distiller("Body Temperature", palette = "Spectral") +
+  #scale_colour_brewer(low = "blue", high = "red")
+  labs(title = "Subset: Owl Head Buttes") +
+  theme_bw(base_size = 16)
+```
+
+```{r need to filter high temp obs where logger obviously not in animal}
+obs_high_temp <- data %>% filter(Tb > 38.5)
+```
+
+```{r summary of points, message=FALSE, warning=FALSE}
+summary_allobs <- data %>%
+  group_by(Population, ID) %>%
+  summarise(n=n(), first_obs=min(date), last_obs=max(date), duration=round(difftime(last_obs,first_obs, units = "weeks"), 1)) #round to 0.1 weeks
+
+summary_allobs <- summary_allobs %>%
+  arrange(Population, duration)
+
+summary_allobs
+```
+
+```{r Tb_monitoring_duration}
+tracking_dur <- ggplot(summary_allobs)+
+  aes(Population, duration)+
+  geom_boxplot(fill="pink", alpha=0.5, color="gray", fatten=6)+ #fatten makes median bar bigger
+  geom_jitter(width = .2, size=2)+
+  labs(y="Duration of Tracking (weeks)")+
+  scale_y_continuous(breaks = c(0, 52, 104, 156, 208, 260, 312))+
+  theme_bw()
+
+tracking_dur
+```
+
+```{r Tb_histograms_by_site}
+ggplot(data=subset(data, species == "sus" & Tb <39), aes(x=Tb)) +
+  geom_histogram(binwidth = 1) +
+  facet_wrap(~Population, scales = "free_y")
+#still hides that diff pops sampled differently
+```
+
+```{r Tb_ridge_plot}
+ggplot(data=subset(data, species == "sus" & Tb <39), aes(x = Tb, y = Population, fill = stat(x))) +
+  geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01) + #gradient ridge plot
+  scale_fill_viridis_c(name = "Tb [C]", option = "C") +
+  theme(legend.position = c(0.925, 0.7)) +
+  labs(title = 'Gila Monster Tb Across Populations')
+#still hides fact that pops sampled differently; no VF night Tb records
+```
+
+
+```{r save workspace}
+save.image(file = "Gila_Tb_multisite.RData")
+#saving workspace means don't have to re-assemble files to input dataframe
+```
+https://stackoverflow.com/questions/6986657/find-duplicated-rows-based-on-2-columns-in-data-frame-in-r
+find dupes:
