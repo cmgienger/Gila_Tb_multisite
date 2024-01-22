@@ -49,7 +49,6 @@ data <- dir("data",full.names = T) %>%
 Or try to newer dplyr multi-file import procedure:
 https://www.tidyverse.org/blog/2021/08/teach-tidyverse-2021/#reading-data-with-readr
 
-
 ```{r clean up data after import, include=FALSE}
 data <- data %>% 
   select(-Date, -Time) %>%
@@ -136,7 +135,6 @@ ggplot(data=subset(data, species == "sus" & Tb <39), aes(x = Tb, y = Population,
   labs(title = 'Gila Monster Tb Across Populations')
 #still hides fact that pops sampled differently; no VF night Tb records
 ```
-
 
 ```{r save workspace}
 save.image(file = "Gila_Tb_multisite.RData")
