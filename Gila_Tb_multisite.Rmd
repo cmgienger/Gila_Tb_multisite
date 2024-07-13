@@ -22,13 +22,11 @@ knitr::opts_chunk$set(
  #sends figs in each chunk to folder after knitting
 
 library(tidyverse)
-library(lubridate) #work with date-time
 library(readxl) #for importing and combining xlsx files
 library(ggridges)
-
-#library(vroom) #fast import for big data sets
-#library(rio) #convert files from .xlsx to .csv
-#library(scales)
+library(janitor)
+library(PNWColors)
+library(viridis)
 ```
 
 ```{r load the saved workspace}
@@ -40,14 +38,14 @@ load("Gila_Tb_multisite.RData")
 #timer for each chunk
 ```
 
-```{r one step combine and import xlsx files, message=FALSE, warning=FALSE, cache=TRUE}
-data <- dir("data",full.names = T) %>% 
+## Import and Clean Data
+
+```{r one step combine and import xlsx files, eval=FALSE, message=FALSE, warning=FALSE, cache=TRUE, include=FALSE}
+data <- dir("data",full.names = TRUE) %>% 
   map_df(read_xlsx) #uses a map function from purrr
 #pitches a lot of errors
 #but much less code, easier, and faster (~15 sec) than converting files to csv, combining, and deleting csvs.
 ```
-Or try to newer dplyr multi-file import procedure:
-https://www.tidyverse.org/blog/2021/08/teach-tidyverse-2021/#reading-data-with-readr
 
 ```{r clean up data after import, include=FALSE}
 data <- data %>% 
@@ -55,8 +53,10 @@ data <- data %>%
   mutate(
     ID = factor(ID), #make ID a factor
     Population = factor(Population), #make population a factor
+    Population = fct_relevel(Population,c("UT","NV", "VF", "MC", "Tonto", "OHB", "SC", "JA")), #order populations from north to south
     date=date(DateTime), #extract date from DateTime
     month=month(DateTime), #extract month of year from DateTime
+    week=isoweek(DateTime), #extract week of year from DateTime; this is a weird one for first/last weeks of year
     day=mday(DateTime), #extract day of month from DateTime
     julian=yday(DateTime), #extract julian date (day of year)
     hour=hour(DateTime), #extract hour of day
@@ -68,17 +68,39 @@ data <- data %>%
 #good example of many-category case_when()
 ```
 
+```{r check and list duplicate measurements}
+data %>%  
+  group_by_all() %>%
+  filter(n()>1) %>%
+  ungroup() %>%
+  distinct(.keep_all = TRUE)
+
+#analogous to janitor::get_dupes(data)
+#returns list of dupes (8 out of 830271 obs)
+```
+
+```{r remove dupes and verify}
+data <- data %>%
+  distinct(.keep_all = TRUE) #keeps only the distinct values in dataframe (drops the 8 dupes)
+
+janitor::get_dupes(data) #check to make sure no dupes persist
+```
+## Figures
+
 ```{r Tb_temporal_across_pops, fig.height=8, fig.width=7, message=FALSE, warning=FALSE, cache=TRUE}
 #make a chart showing the tracking duration for each individual
 
 ggplot(data, aes(DateTime, ID, color = Population)) +
-  geom_point (alpha=0.5, size=1.5) + #set symbol size proportional to # of overlapping obs (same day)
+  geom_point(alpha = 0.5, size = 1.5) + # set symbol size proportional to # of overlapping obs (same day)
   geom_line() +
   labs(title = "Distribution of Heloderma Tb Data") +
-  scale_color_manual(labels = c("JA-Chamela", "AZ-McDowell", "NV-McCullough", "AZ-Owl Head", "AZ-Stone Canyon", "AZ-Tonto", "UT-Red Cliffs", "NV-Valley of Fire"), values = c("brown", "blue", "red", "green", "pink", "orange", "lightblue", "darkgreen")) +
+  scale_color_manual(
+    labels = c("UT-Red Cliffs", "NV-McCullough", "NV-Valley of Fire", "AZ-McDowell", "AZ-Tonto", "AZ-Owl Head", "AZ-Stone Canyon", "JA-Chamela"),
+    values = c("red", "blue", "firebrick", "green", "pink", "orange", "lightblue", "darkgreen")) +
   scale_x_datetime(date_breaks = "2 year", date_labels = "%Y") +
   theme(legend.position = "right") +
-  theme(legend.background = element_rect(size=0.5, linetype="solid", colour ="black"))
+  theme(legend.background = element_rect(size = 0.25, linetype = "solid", colour = "black")
+  )
 
 #ggsave("Figs/Tb_across_pops.png")
 ```
@@ -94,21 +116,23 @@ ggplot(data=subset(data, date >= "2005-01-01" & date <= "2008-01-01" & Populatio
 ```
 
 ```{r need to filter high temp obs where logger obviously not in animal}
-obs_high_temp <- data %>% filter(Tb > 38.5)
+obs_high_temp <- data %>% 
+  filter(Tb > 38.5) %>%
+  arrange(DateTime)
 ```
 
 ```{r summary of points, message=FALSE, warning=FALSE}
 summary_allobs <- data %>%
   group_by(Population, ID) %>%
-  summarise(n=n(), first_obs=min(date), last_obs=max(date), duration=round(difftime(last_obs,first_obs, units = "weeks"), 1)) #round to 0.1 weeks
+  summarise(n = n(), first_obs = min(date), last_obs = max(date), duration = round(difftime(last_obs, first_obs, units = "weeks"), 1)) # round to 0.1 weeks
 
 summary_allobs <- summary_allobs %>%
   arrange(Population, duration)
 
-summary_allobs
+#summary_allobs
 ```
 
-```{r Tb_monitoring_duration}
+```{r Tb_monitoring_duration, message=FALSE}
 tracking_dur <- ggplot(summary_allobs)+
   aes(Population, duration)+
   geom_boxplot(fill="pink", alpha=0.5, color="gray", fatten=6)+ #fatten makes median bar bigger
@@ -127,18 +151,82 @@ ggplot(data=subset(data, species == "sus" & Tb <39), aes(x=Tb)) +
 #still hides that diff pops sampled differently
 ```
 
-```{r Tb_ridge_plot}
-ggplot(data=subset(data, species == "sus" & Tb <39), aes(x = Tb, y = Population, fill = stat(x))) +
-  geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01) + #gradient ridge plot
-  scale_fill_viridis_c(name = "Tb [C]", option = "C") +
-  theme(legend.position = c(0.925, 0.7)) +
-  labs(title = 'Gila Monster Tb Across Populations')
-#still hides fact that pops sampled differently; no VF night Tb records
+```{r Tb_ridge_plot, message=FALSE, warning=FALSE}
+ggplot(data=subset(data, Population == c("JA", "UT", "NV", "MC", "OHB", "SC") & Tb <39), aes(x = Tb, y = Population, fill = after_stat(x))) +
+  geom_density_ridges_gradient(scale = 1.8, rel_min_height = 0.003) + #gradient ridge plot
+  scale_fill_distiller(palette = "RdYlBu", name = expression(degree*C)) +
+  xlab("Body Temperature") +
+  ylab("") +
+  scale_y_discrete(limits=rev, labels = c("Jalisco (H. horridum)", "AZ-Stone Canyon", "AZ-Owl Head", "AZ-McDowell", "Nevada", "Utah")) + #reverses Y axis plotting order
+  scale_x_continuous(breaks = pretty(data$Tb, n = 10)) +
+  coord_cartesian(xlim=c(7.5, 37.5)) + 
+  theme_classic() +
+  theme(legend.position="none")
+  
+ggsave("Figs/Tb_density_pops.png")
 ```
 
 ```{r save workspace}
 save.image(file = "Gila_Tb_multisite.RData")
 #saving workspace means don't have to re-assemble files to input dataframe
 ```
-https://stackoverflow.com/questions/6986657/find-duplicated-rows-based-on-2-columns-in-data-frame-in-r
-find dupes:
+
+```{r jet colors for heatmap}
+jet.colors <- colorRampPalette(c("#00007F", "blue", "#007FFF", "cyan", "#7FFF7F", "yellow", "#FF7F00", "red", "#7F0000"))
+```
+
+```{r calc Tb means by population, month, and hour}
+hourly_means <- data %>% 
+  filter(Tb < 38.5) %>% #gets rid of nonsense high Tb obs
+  drop_na(Tb, month, hour) %>% #gets rid of NA data
+  group_by(Population, month, hour) %>%
+  summarize(mean_Tb = mean(Tb, na.rm = TRUE))
+```
+
+```{r heat maps of Tb by population, fig.width=4}
+
+hourly_means %>%
+  filter(Population == c("JA", "UT")) %>%
+ggplot(aes(x=month, y=hour, fill=mean_Tb)) + 
+  geom_tile(interpolate = TRUE) +
+            #interpolate = TRUE,
+            #hjust = 0,
+            #vjust = .5) + 
+  geom_hline(yintercept=12, linetype="dashed", alpha = 0.20) +
+  #geom_vline(xintercept=c(3.5,7.5,11.5), linetype="dashed", alpha = 0.20) +
+  scale_fill_gradientn(colours = jet.colors(48)) +
+  #scale_fill_distiller(palette = "Spectral") + #Spectral
+  facet_wrap(~Population, ncol = 2) + 
+  xlab("Month") +
+  ylab("Hour of Day") +
+  labs(fill = "Temperature (°C)") +
+  theme(panel.background = element_blank(),
+        panel.border = element_rect(color = "black", fill=NA, size=0.5),
+        legend.position= "bottom",
+        legend.direction = "horizontal",
+        legend.key.size = unit(0.5, 'cm'),
+        legend.box.background=element_rect(colour='black', size = 0.5),
+        axis.title = element_text(size=7),
+        axis.text.x = element_text(size=6),
+        axis.text.y = element_text(size=6),
+        strip.background = element_blank(),
+        strip.text.x= element_text(size = 7))
+  #scale_x_discrete(limits=c(1, 12), breaks=c(1, 6, 12)) +
+  #scale_y_continuous(limits=c(0, 23), breaks=c(0, 6, 12, 18, 23))
+
+#ggsave("Figs/Tb_heatmap_bypop.png") 
+#best to set desired output dimensions before adjusting axes, labels, etc.
+```
+```{r}
+data %>%
+  filter(Population == c("JA", "UT", "NV", "OHB", "SC")) %>%
+  filter(Tb < 38.5) %>% #gets rid of nonsense high Tb obs
+ggplot(aes(x=week, y=hour, fill=Tb)) + 
+  geom_tile() +
+  facet_wrap(~Population, ncol = 2) 
+  #scale_fill_gradient(low = "white", high = "black", na.value = NA)
+  #scale_fill_gradientn(colours = jet.colors(8))
+  #scale_x_discrete(expansion(0,0)) +
+  #scale_y_discrete(expansion(0,0))
+```
+
